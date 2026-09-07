@@ -11,7 +11,7 @@ export default defineConfig({
       manifest: {
         name: 'Mike 2.0',
         short_name: 'Mike 2.0',
-        description: 'Build the body. Become the version.',
+        description: 'Transformation Operating System — Build the body. Become the version.',
         theme_color: '#0D0D2B',
         background_color: '#0D0D2B',
         display: 'standalone',
