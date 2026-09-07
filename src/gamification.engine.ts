@@ -106,7 +106,7 @@ export function evaluateAchievements(
   const maxWeeklyVol = Math.max(...weeklyVolumes, 0);
 
   // Check no-adaptive-deload (complete a mesocycle without adaptive deload)
-  const hadAdaptiveDeload = sessions.some(s => s.mesocycleNumber === Math.max(...sessions.map(s2 => s2.mesocycleNumber), 1) && s.phase === 'deload');
+  const hadAdaptiveDeload = sessions.some(s => s.wasDeloadActive === true && s.phase !== 'deload');
 
   const conditions: Record<string, boolean> = {
     first_workout:   workoutCount >= 1,
@@ -114,7 +114,7 @@ export function evaluateAchievements(
     week_2:          workoutCount >= 14,
     week_4:          workoutCount >= 30,
     week_8:          workoutCount >= 60,
-    day_90:          workoutCount >= 90,
+    day_90:          isPost90 || sessions.some(s => !s.isRestDay && s.calendarDay >= 90),
     first_pr:        prs.length >= 1,
     pr_5:            prs.length >= 5,
     pr_20:           prs.length >= 20,
@@ -284,7 +284,7 @@ export function updateGamification(
   // Missions — refresh daily/weekly as needed
   let missions = updateMissions(current.missions, sessions, prs, calendarDay, weekNumber);
   const todayStr = new Date().toISOString().split('T')[0];
-  const hasDailyMission = missions.some(m => m.type === 'daily' && m.id.includes(todayStr) && m.status === 'active');
+  const hasDailyMission = missions.some(m => m.type === 'daily' && m.id.includes(todayStr));
   if (!hasDailyMission) {
     const newDailies = createDailyMissions(calendarDay);
     missions = [...missions.filter(m => m.type !== 'daily' || !m.id.includes(todayStr)), ...newDailies];

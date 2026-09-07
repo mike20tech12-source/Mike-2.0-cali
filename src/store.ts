@@ -3,7 +3,7 @@ import {
   UserProfile, GeneratedWorkout, TrainingState, ProgressPhoto,
 } from './types';
 import { loadAppData, saveAppData } from './persistence';
-import { calcTrainingState, generateWorkout } from './training.engine';
+import { calcTrainingState, generateWorkout, getMesocyclePhase } from './training.engine';
 import { buildAthleteModel } from './athlete.engine';
 import { computeAdaptationState } from './fatigue.engine';
 import { computeTransformation, calcSessionXP } from './transformation.engine';
@@ -18,7 +18,7 @@ import { EXERCISE_REGISTRY, EXERCISE_NAME_TO_ID } from './registry';
 // → Progression Decision → Workout Generator → Next Workout → Execution → repeat
 // ═══════════════════════════════════════════════════════════════════════════
 
-export function recomputeFullLoop(data: AppData): AppData {
+export function recomputeFullLoop(data: AppData, earnedXPThisSession = 0): AppData {
   const completedDays = data.sessions.filter(s => !s.isRestDay).map(s => s.calendarDay);
   const trainingBase = calcTrainingState(data.profile.startDate, completedDays, completedDays.length);
 
@@ -41,7 +41,7 @@ export function recomputeFullLoop(data: AppData): AppData {
   const gamResult = updateGamification(
     data.gamification, data.sessions, data.prs, athleteModel, data.gamification.xp,
     trainingBase.calendarDay, trainingBase.weekNumber, trainingBase.isPost90,
-    analytics.weeklyTrends, 0,
+    analytics.weeklyTrends, earnedXPThisSession,
   );
 
   const totalDays = trainingBase.calendarDay;
@@ -113,7 +113,7 @@ export function commitWorkoutSession(
     trainingPhase: trainingBase.trainingPhase, focus, exercises,
     preCheckIn: checkIn, totalVolume, estimatedLoad: totalVolume,
     durationMinutes, note, isRestDay: false,
-    generatedByAI: !!data.training.nextWorkout,
+    generatedByAI: (data.training.nextWorkout?.aiDecisionIds?.length ?? 0) > 0,
     wasDeloadActive: data.adaptation?.deloadActive ?? false,
     aiDecisionId: data.training.nextWorkout?.aiDecisionIds[0],
   };
@@ -136,7 +136,7 @@ export function commitWorkoutSession(
   let aiMemory = data.aiMemory;
   if (data.training.nextWorkout?.aiDecisionIds.length) {
     for (const decisionId of data.training.nextWorkout.aiDecisionIds) {
-      const outcome = totalVolume > 0 && exercises.some(e => e.setTags.filter(t => t === 'failed').length === 0) ? 'success' : 'neutral';
+      const outcome = totalVolume > 0 && exercises.length > 0 && exercises.every(e => e.setTags.filter(t => t === 'failed').length === 0) ? 'success' : 'neutral';
       aiMemory = recordDecisionOutcome(aiMemory, decisionId, outcome, sessionId);
     }
   }
@@ -144,7 +144,7 @@ export function commitWorkoutSession(
   const gamification = { ...data.gamification, xp: data.gamification.xp + earnedXP };
 
   const updated: AppData = { ...data, sessions, prs, aiMemory, gamification };
-  return recomputeFullLoop(updated);
+  return recomputeFullLoop(updated, earnedXP);
 }
 
 // ─── ADD REST/RECOVERY DAY ────────────────────────────────────────────────────
@@ -171,13 +171,20 @@ export function commitRestDay(data: AppData, note: string): AppData {
 
 // ─── RETROACTIVE LOG ──────────────────────────────────────────────────────────
 export function commitRetroactiveLog(data: AppData, calendarDay: number): AppData {
+  const start = new Date(data.profile.startDate);
+  start.setHours(0,0,0,0);
+  const historicalDate = new Date(start);
+  historicalDate.setDate(start.getDate() + calendarDay - 1);
+  const isPost90 = calendarDay > 90;
   const week = Math.ceil(calendarDay / 7);
+  const mesocycleNumber = isPost90 ? Math.floor((calendarDay - 91) / 28) + 2 : 1;
+  const mesocycleWeek = isPost90 ? Math.floor(((calendarDay - 91) % 28) / 7) + 1 : ((week - 1) % 4) + 1;
+  const phase = getMesocyclePhase(mesocycleWeek);
   const session: WorkoutSession = {
-    id: `retro_${calendarDay}`, date: new Date().toISOString(),
-    programDay: Math.min(calendarDay, 90), calendarDay, weekNumber: week,
-    mesocycleNumber: calendarDay > 90 ? Math.floor((calendarDay-90)/28)+2 : 1,
-    mesocycleWeek: ((week-1) % 4) + 1, phase: 'build',
-    trainingPhase: calendarDay > 90 ? 'infinite' : 'foundation',
+    id: `retro_${calendarDay}`, date: historicalDate.toISOString(),
+    programDay: calendarDay, calendarDay, weekNumber: week,
+    mesocycleNumber, mesocycleWeek, phase,
+    trainingPhase: isPost90 ? 'infinite' : 'foundation',
     focus: 'Retroactive Log', exercises: [],
     preCheckIn: { energy: 2, soreness: 1, timestamp: new Date().toISOString() },
     totalVolume: 0, estimatedLoad: 0, durationMinutes: 0,

@@ -91,9 +91,9 @@ export function computeAdaptationState(
   const exerciseMultipliers: Record<string, number> = {};
   if (athleteModel) {
     for (const [exId, m] of Object.entries(athleteModel.exerciseMastery)) {
-      if (m.isPlateaued) exerciseMultipliers[exId] = Math.min(globalMult * 1.1, 1.25);
-      else if (m.readyForProgression) exerciseMultipliers[exId] = globalMult * 1.05;
-      else exerciseMultipliers[exId] = globalMult;
+      if (m.isPlateaued) exerciseMultipliers[exId] = 1.1;
+      else if (m.readyForProgression) exerciseMultipliers[exId] = 1.05;
+      else exerciseMultipliers[exId] = 1.0;
     }
   }
 

@@ -260,7 +260,8 @@ export function calcTrainingState(
   const start = new Date(startDate); start.setHours(0,0,0,0);
   const now = new Date(); now.setHours(0,0,0,0);
   const calendarDay = Math.max(1, Math.floor((now.getTime() - start.getTime()) / 86400000) + 1);
-  const programDay = Math.min(calendarDay, 90);
+  // Program day follows the real calendar indefinitely; Day 90 is the transition, not a hard cap.
+  const programDay = calendarDay;
   const isPost90 = calendarDay > 90;
 
   let mesocycleNumber: number;
