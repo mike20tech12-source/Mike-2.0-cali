@@ -234,7 +234,7 @@ const WorkoutView: React.FC<{t:Theme;workout:GeneratedWorkout;checkin:PreWorkout
   const [running,setRunning]=useState(false);
   const [tapCount,setTapCount]=useState(0);
   const [repInput,setRepInput]=useState('');
-  const [logs,setLogs]=useState<Record<string,{repsPerSet:number[];durationsPerSet:number[];setTags:string[]}>>({});
+  const [logs,setLogs]=useState<Record<number,{repsPerSet:number[];durationsPerSet:number[];setTags:string[];executionStatus:('completed'|'failed'|'skipped'|'abandoned')[];usedModification:boolean;modificationLabel?:string;performedExerciseId:string;performedExerciseName:string}>>({});
   const [newPRs,setNewPRs]=useState<Record<string,number>>({});
   const [tipIdx,setTipIdx]=useState(0);
   const [useMod,setUseMod]=useState<Record<number,boolean>>({});
@@ -247,11 +247,21 @@ const WorkoutView: React.FC<{t:Theme;workout:GeneratedWorkout;checkin:PreWorkout
 
   const ex = exs[ei];
   const exDef = ex ? EXERCISE_REGISTRY[ex.exerciseId] : undefined;
-  const isTimed = ex?.type === 'timed';
+  const performedExerciseId = ex && useMod[ei] && exDef?.regressionId ? exDef.regressionId : ex?.exerciseId;
+  const performedDef = performedExerciseId ? EXERCISE_REGISTRY[performedExerciseId] : undefined;
+  const isTimed = Boolean(performedDef?.holdRange) || ex?.type === 'timed';
+  const activeTargetDuration = isTimed
+    ? (useMod[ei] && performedDef?.holdRange
+      ? Math.round((performedDef.holdRange[0] + performedDef.holdRange[1]) / 2)
+      : (ex?.targetDuration ?? 30))
+    : undefined;
+  const activeTargetReps = !isTimed && ex?.targetReps !== 'max' && performedDef
+    ? Math.max(performedDef.repRange[0], Math.min(performedDef.repRange[1], ex.targetReps))
+    : ex?.targetReps;
   const REST = checkin && checkin.soreness>=3 ? 90 : checkin && checkin.energy<=1 ? 75 : ex?.restSeconds ?? 60;
-  const prVal = prs.find(p => p.exerciseId === ex?.exerciseId)?.value;
-  const lastSessionWithEx = ex ? [...sessions].reverse().find(s => s.exercises?.some((e:any) => e.exerciseId === ex.exerciseId)) : undefined;
-  const lastLog = lastSessionWithEx?.exercises.find((e:any) => e.exerciseId === ex.exerciseId);
+  const prVal = prs.find(p => p.exerciseId === performedExerciseId)?.value;
+  const lastSessionWithEx = ex ? [...sessions].reverse().find(s => s.exercises?.some((e:any) => e.exerciseId === performedExerciseId)) : undefined;
+  const lastLog = lastSessionWithEx?.exercises.find((e:any) => e.exerciseId === performedExerciseId);
   const lastValue = lastLog ? (isTimed ? Math.max(...(lastLog.durationsPerSet ?? [0])) : Math.max(...(lastLog.repsPerSet ?? [0]))) : null;
 
   useEffect(() => {
@@ -259,7 +269,12 @@ const WorkoutView: React.FC<{t:Theme;workout:GeneratedWorkout;checkin:PreWorkout
     ref.current = setInterval(() => { setTimer(tm => {
       if (tm<=3 && tm>1 && settings.audio!==false) audio.countdown();
       if (tm<=1) { if(ref.current)clearInterval(ref.current); setRunning(false);
-        if (phase==='work') { if(settings.audio!==false)audio.done(); if(settings.haptics!==false)haptic([80,30,80]); startRest(); }
+        if (phase==='work') {
+          if(settings.audio!==false)audio.done();
+          if(settings.haptics!==false)haptic([80,30,80]);
+          if (isTimed) logSet('good', activeTargetDuration ?? 30);
+          else startRest();
+        }
         else if (phase==='rest') { if(settings.audio!==false)audio.restOver(); if(settings.haptics!==false)haptic([50,30,50,30,100]); advance(); }
         return 0; }
       return tm-1;
@@ -267,35 +282,59 @@ const WorkoutView: React.FC<{t:Theme;workout:GeneratedWorkout;checkin:PreWorkout
     return () => { if(ref.current)clearInterval(ref.current); };
   }, [running, phase, paused]);
 
-  const startWork = () => { setPhase('work'); setTapCount(0); if (isTimed) { setTimer(ex.targetDuration ?? 30); setRunning(true); } };
+  const startWork = () => { setPhase('work'); setTapCount(0); setRepInput(''); if (isTimed) { setTimer(activeTargetDuration ?? 30); setRunning(true); } };
   const startRest = () => { setPhase('rest'); setTimer(REST); setRunning(true); };
   const advance = () => {
     if (si+1 < ex.sets) { setSi(s=>s+1); setPhase('intro'); }
     else if (ei+1 < exs.length) { setEi(e=>e+1); setSi(0); setPhase('intro'); setTipIdx(0); }
     else {
-      const finalLogs = exs.map(e => {
-        const l = logs[e.exerciseId] ?? {repsPerSet:[],durationsPerSet:[],setTags:[]};
-        return { exerciseName:e.exerciseName, sets:e.sets, repsPerSet:l.repsPerSet, durationsPerSet:l.durationsPerSet, type:e.type, setTags:l.setTags, targetReps:e.targetReps };
+      const finalLogs = exs.map((planned, index) => {
+        const l = logs[index] ?? {repsPerSet:[],durationsPerSet:[],setTags:[],executionStatus:[],usedModification:false,performedExerciseId:(useMod[index] && EXERCISE_REGISTRY[planned.exerciseId]?.regressionId) ? EXERCISE_REGISTRY[planned.exerciseId].regressionId! : planned.exerciseId,performedExerciseName:(useMod[index] && EXERCISE_REGISTRY[planned.exerciseId]?.regressionId) ? EXERCISE_REGISTRY[EXERCISE_REGISTRY[planned.exerciseId].regressionId!]?.name ?? planned.exerciseName : planned.exerciseName};
+        return {
+          exerciseId:l.performedExerciseId,
+          exerciseName:l.performedExerciseName,
+          plannedExerciseId:planned.exerciseId,
+          plannedExerciseName:planned.exerciseName,
+          sets:planned.sets,
+          repsPerSet:l.repsPerSet,
+          durationsPerSet:l.durationsPerSet,
+          type: (l.durationsPerSet.length > 0 ? 'timed' : planned.type),
+          setTags:l.setTags,
+          executionStatus:l.executionStatus,
+          targetReps: (useMod[index] && EXERCISE_REGISTRY[planned.exerciseId]?.regressionId && EXERCISE_REGISTRY[EXERCISE_REGISTRY[planned.exerciseId].regressionId!])
+            ? (EXERCISE_REGISTRY[EXERCISE_REGISTRY[planned.exerciseId].regressionId!]?.holdRange ? planned.targetReps === 'max' ? 'max' : Math.max(EXERCISE_REGISTRY[EXERCISE_REGISTRY[planned.exerciseId].regressionId!].repRange[0], Math.min(EXERCISE_REGISTRY[EXERCISE_REGISTRY[planned.exerciseId].regressionId!].repRange[1], Number(planned.targetReps))) : planned.targetReps)
+            : planned.targetReps,
+          targetDuration: (useMod[index] && EXERCISE_REGISTRY[planned.exerciseId]?.regressionId && EXERCISE_REGISTRY[EXERCISE_REGISTRY[planned.exerciseId].regressionId!]?.holdRange)
+            ? Math.round((EXERCISE_REGISTRY[EXERCISE_REGISTRY[planned.exerciseId].regressionId!].holdRange![0] + EXERCISE_REGISTRY[EXERCISE_REGISTRY[planned.exerciseId].regressionId!].holdRange![1]) / 2)
+            : planned.targetDuration,
+          usedModification:l.usedModification,
+          modificationLabel:l.modificationLabel,
+        };
       });
-      const durMin = Math.round((Date.now()-startTimeRef.current)/60000);
+      const durMin = Math.max(1, Math.round((Date.now()-startTimeRef.current)/60000));
       onDone(finalLogs, newPRs, durMin);
     }
   };
 
-  function logSet(tag: string) {
-    const key = ex.exerciseId;
-    const val = tapCount>0 ? tapCount : Number(repInput)||0;
+  function logSet(tag: 'easy'|'good'|'hard'|'failed', measuredValue?: number) {
+    const key = ei;
+    const value = isTimed
+      ? Math.max(1, Math.min(activeTargetDuration ?? 3600, measuredValue ?? ((activeTargetDuration ?? 30) - timer)))
+      : Math.max(0, Math.round(measuredValue ?? (tapCount>0 ? tapCount : Number(repInput)||0)));
+    if (!isTimed && value <= 0) return;
     setLogs(prev => {
-      const cur = prev[key] ?? {repsPerSet:[],durationsPerSet:[],setTags:[]};
+      const cur = prev[key] ?? {repsPerSet:[],durationsPerSet:[],setTags:[],executionStatus:[],usedModification:false,performedExerciseId:(useMod[ei] && exDef?.regressionId) ? exDef.regressionId : ex.exerciseId,performedExerciseName:(useMod[ei] && exDef?.regressionId) ? EXERCISE_REGISTRY[exDef.regressionId]?.name ?? ex.exerciseName : ex.exerciseName,usedModification:Boolean(useMod[ei]),modificationLabel:(useMod[ei] && exDef?.regressionId) ? EXERCISE_REGISTRY[exDef.regressionId]?.name : undefined};
       return { ...prev, [key]: {
-        repsPerSet: isTimed ? cur.repsPerSet : [...cur.repsPerSet, val],
-        durationsPerSet: isTimed ? [...cur.durationsPerSet, timer<=0?(ex.targetDuration??30):val] : cur.durationsPerSet,
+        ...cur,
+        repsPerSet: isTimed ? cur.repsPerSet : [...cur.repsPerSet, value],
+        durationsPerSet: isTimed ? [...cur.durationsPerSet, value] : cur.durationsPerSet,
         setTags: [...cur.setTags, tag],
+        executionStatus: [...cur.executionStatus, tag === 'failed' ? 'failed' : 'completed'],
       }};
     });
-    if (ex.targetReps==='max' && val>0) {
+    if (ex.targetReps==='max' && !isTimed && value>0) {
       const old = prVal ?? 0;
-      if (val>old) { setNewPRs(p=>({...p,[ex.exerciseName]:val})); if(settings.audio!==false)audio.pr(); if(settings.haptics!==false)haptic([50,30,50,30,50,30,200]); }
+      if (value>old) { setNewPRs(p=>({...p,[performedDef?.name ?? ex.exerciseName]:value})); if(settings.audio!==false)audio.pr(); if(settings.haptics!==false)haptic([50,30,50,30,50,30,200]); }
     }
     setRepInput(''); setTapCount(0); startRest();
   }
@@ -321,7 +360,7 @@ const WorkoutView: React.FC<{t:Theme;workout:GeneratedWorkout;checkin:PreWorkout
       <Card t={t} style={{marginTop:12}}>
         <Lbl t={t}>EXERCISE {ei+1} OF {exs.length}</Lbl>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
-          <div onClick={()=>onOpenDemo(ex.exerciseId)} style={{cursor:'pointer'}}><div style={{fontSize:24,fontWeight:900,marginBottom:2}}>{ex?.exerciseName} <span style={{fontSize:12,color:t.blue}}>ⓘ</span></div><div style={{fontSize:11,color:t.txt2,marginBottom:2}}>{exDef?.primaryMuscles.join(', ')}</div></div>
+          <div onClick={()=>onOpenDemo(ex.exerciseId)} style={{cursor:'pointer'}}><div style={{fontSize:24,fontWeight:900,marginBottom:2}}>{ex?.exerciseName} <span style={{fontSize:12,color:t.blue}}>ⓘ</span></div><div style={{fontSize:11,color:t.txt2,marginBottom:2}}>{performedDef?.primaryMuscles.join(', ') ?? exDef?.primaryMuscles.join(', ')}</div></div>
           {prVal!=null && <div style={{fontSize:10,color:t.gold,textAlign:'right'}}>🏆 PR<br/>{prVal}</div>}
         </div>
         {ex.adjustmentReason && <div style={{fontSize:10,color:t.blue,marginBottom:8}}>🧠 {ex.adjustmentReason}</div>}
@@ -329,12 +368,12 @@ const WorkoutView: React.FC<{t:Theme;workout:GeneratedWorkout;checkin:PreWorkout
         <div style={{fontSize:10,color:t.txt2,letterSpacing:1,marginBottom:16}}>Set {si+1} of {ex?.sets}</div>
 
         {phase==='intro' && (<div style={{textAlign:'center'}}>
-          <div style={{fontSize:26,fontWeight:900,color:t.blue,marginBottom:8}}>{isTimed?`${ex.targetDuration}s`:ex.targetReps==='max'?'MAX REPS':`${ex.targetReps} REPS`}</div>
+          <div style={{fontSize:26,fontWeight:900,color:t.blue,marginBottom:8}}>{isTimed?`${activeTargetDuration}s`:activeTargetReps==='max'?'MAX REPS':`${activeTargetReps} REPS`}</div>
           {ex.targetReps==='max' && lastValue!=null && lastValue>0 && <div style={{fontSize:11,color:t.blue,marginBottom:10}}>🎯 Last time: {lastValue}{isTimed?'s':' reps'} — beat it</div>}
           {exDef?.breathingCue && <div style={{fontSize:11,color:t.txt2,marginBottom:14}}>💨 {exDef.breathingCue}</div>}
           <Btn t={t} onClick={startWork}>{isTimed?'▶ START TIMER':'▶ GO'}</Btn>
-          {exDef && exDef.modifications.length>0 && !useMod[ei] && <div style={{fontSize:11,color:t.gold,textAlign:'center',marginTop:10,cursor:'pointer'}} onClick={()=>setUseMod(m=>({...m,[ei]:true}))}>Can't do it? Use easier variation →</div>}
-          {useMod[ei] && exDef && <div style={{fontSize:11,color:t.gold,marginTop:10}}>🔄 Try: {exDef.modifications[0]}</div>}
+          {exDef?.regressionId && !useMod[ei] && <div style={{fontSize:11,color:t.gold,textAlign:'center',marginTop:10,cursor:'pointer'}} onClick={()=>setUseMod(m=>({...m,[ei]:true}))}>Can't do it? Use easier variation →</div>}
+          {useMod[ei] && exDef?.regressionId && <div style={{fontSize:11,color:t.gold,marginTop:10}}>🔄 Performing: {EXERCISE_REGISTRY[exDef.regressionId]?.name ?? 'easier variation'}</div>}
         </div>)}
 
         {phase==='work' && isTimed && (<div style={{textAlign:'center'}}>
